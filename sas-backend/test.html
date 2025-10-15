@@ -1,0 +1,264 @@
+<html>
+  <head>
+    <title>Booking Widget</title>
+  </head>
+  <body>
+    <div id="custom-booking-widget"></div>
+    <script>
+      const RESOURCE_RULES = {
+        "Axe Throwing": { total: 6, unit: 2, type: "lane" },
+        "Smash Room": { total: 4, unit: 4, type: "room" },
+        "Escape Room": { total: 1, unit: 6, type: "room" },
+      };
+
+      document.addEventListener("DOMContentLoaded", async function () {
+        const widgetContainer = document.getElementById(
+          "custom-booking-widget"
+        );
+        if (!widgetContainer) return;
+
+        const BTA_API_KEY =
+          "eyJhbGciOiJIUzI1NiJ9.eyJpZCI6NjYyNTYsInNob3AiOiJ0aGUtcHJvamVjdC1icmVhayJ9.vYWWuIV6WZ_6F9FMTxnHgIp_G6No8Q5NdH0UvueMXlA";
+        const BTA_API = "https://api.bookthatapp.com/v1";
+        let selectedDate = new Date();
+        let currentMonth = selectedDate.getMonth();
+        let currentYear = selectedDate.getFullYear();
+        let variantOptions = [];
+        let variantMap = {};
+        let selectedVariantId = null;
+        let availableSlots = [];
+        let productTitle = "";
+
+        function formatDate(date) {
+          return date.toISOString().split("T")[0];
+        }
+
+        async function getProductData() {
+          const handle = window.location.pathname
+            .split("/")
+            .filter(Boolean)
+            .pop();
+          const res = await fetch(`/products/${handle}.js`);
+          const product = await res.json();
+          productTitle = product.title;
+          variantOptions = product.variants.map((variant) => {
+            const price = (variant.price / 100).toFixed(2);
+            variantMap[variant.id] = variant;
+            return {
+              id: variant.id,
+              label: `${variant.title} $${price}`,
+            };
+          });
+        }
+
+        async function getBookingsForDate(date) {
+          const url = `${BTA_API}/bookings?start=${date}&end=${date}`;
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${BTA_API_KEY}` },
+          });
+          return await res.json();
+        }
+
+        function getUsedResources(bookings, slotTime, groupSize) {
+          const rule = RESOURCE_RULES[productTitle];
+          if (!rule) return false;
+          let count = 0;
+          bookings.forEach((b) => {
+            if (b.start === slotTime && b.product_name.includes(productTitle)) {
+              count += Math.ceil((b.quantity || 1) / rule.unit);
+            }
+          });
+          const available = rule.total - count;
+          return available >= Math.ceil(groupSize / rule.unit);
+        }
+
+        async function getAvailableSlots(productId, date, groupSize) {
+          const url = `${BTA_API}/availability?product_id=${productId}&start=${date}&end=${date}`;
+          const res = await fetch(url, {
+            headers: { Authorization: `Bearer ${BTA_API_KEY}` },
+          });
+          const data = await res.json();
+          const slots = data?.availability?.[productId] || [];
+          const bookings = await getBookingsForDate(date);
+
+          return slots.filter((slot) => {
+            return (
+              slot.quantity > 0 &&
+              getUsedResources(bookings, slot.start, groupSize)
+            );
+          });
+        }
+
+        function renderTimeSlots(slots) {
+          const timeSlotSelect = widgetContainer.querySelector("#timeSlot");
+          timeSlotSelect.innerHTML = `<option value="">Select time</option>`;
+          slots.forEach((slot) => {
+            const time = new Date(slot.start).toLocaleTimeString([], {
+              hour: "2-digit",
+              minute: "2-digit",
+            });
+            timeSlotSelect.innerHTML += `<option value="${slot.start}">${time}</option>`;
+          });
+        }
+
+        async function renderWidget() {
+          await getProductData();
+          widgetContainer.innerHTML = `
+          <div style="font-family: Arial; max-width: 360px;">
+            <h2 style="text-align: center; font-size: 18px; margin-bottom: 16px;">Select Date & Time</h2>
+            <label style="font-size: 14px; display: block; margin-bottom: 5px;">Group Size</label>
+            <select id="groupSize" style="width: 100%; padding: 10px; margin-bottom: 20px; border: 1px solid #ccc; border-radius: 4px;">
+              <option value="">Select</option>
+              ${variantOptions
+                .map((v) => `<option value="${v.id}">${v.label}</option>`)
+                .join("")}
+            </select>
+            <div id="calendarContainer" style="margin-bottom: 20px;">
+              ${generateCalendar(currentMonth, currentYear)}
+            </div>
+            <select id="timeSlot" style="width: 100%; padding: 10px; margin-bottom: 15px; border: 1px solid #ccc; border-radius: 4px;">
+              <option value="">Select time</option>
+            </select>
+            <button id="bookBtn" disabled style="width: 100%; padding: 12px; font-weight: bold; color: white; background: #cdd2d8; border: none; border-radius: 4px;">Book Now</button>
+          </div>
+        `;
+          bindEvents();
+          await updateSlots();
+        }
+
+        async function updateSlots() {
+          const groupSelect = widgetContainer.querySelector("#groupSize");
+          selectedVariantId = groupSelect.value;
+          if (!selectedVariantId) return;
+
+          let groupSize = 1;
+          if (variantMap[selectedVariantId]) {
+            const title = variantMap[selectedVariantId].title;
+            const match = title.match(/\d+/);
+            if (match) groupSize = parseInt(match[0]);
+          }
+
+          const selectedDateStr = formatDate(selectedDate);
+          availableSlots = await getAvailableSlots(
+            selectedVariantId,
+            selectedDateStr,
+            groupSize
+          );
+          renderTimeSlots(availableSlots);
+        }
+
+        function generateCalendar(month, year) {
+          const daysOfWeek = ["Mo", "Tu", "We", "Th", "Fr", "Sa", "Su"];
+          const firstDay = new Date(year, month, 1);
+          const startingDay = (firstDay.getDay() + 6) % 7;
+          const daysInMonth = new Date(year, month + 1, 0).getDate();
+          let html = `<div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px;"><span style="font-weight: bold;">${firstDay.toLocaleString(
+            "default",
+            { month: "long" }
+          )} ${year}</span><div><span id="prevMonth" style="cursor: pointer;">❮</span><span style="margin: 0 8px;"></span><span id="nextMonth" style="cursor: pointer;">❯</span></div></div><table style="width: 100%; text-align: center; font-size: 14px; color: #555;"><thead><tr style="color: #888;">${daysOfWeek
+            .map((d) => `<th style="padding: 4px 10px;">${d}</th>`)
+            .join("")}</tr></thead><tbody>`;
+          let date = 1;
+          for (let i = 0; i < 6; i++) {
+            html += "<tr>";
+            for (let j = 0; j < 7; j++) {
+              if ((i === 0 && j < startingDay) || date > daysInMonth) {
+                html += `<td style="padding: 4px 10px; color: #ccc;"></td>`;
+              } else {
+                const thisDate = new Date(year, month, date);
+                const thisDateStr = formatDate(thisDate);
+                const isSelected = formatDate(selectedDate) === thisDateStr;
+                let cellStyle = "padding: 4px 10px; cursor: pointer;";
+                if (isSelected)
+                  cellStyle += " background: #d5dce5; border-radius: 4px;";
+                html += `<td class="calendar-cell" data-date="${thisDateStr}" style="${cellStyle}">${date}</td>`;
+                date++;
+              }
+            }
+            html += "</tr>";
+            if (date > daysInMonth) break;
+          }
+          html += "</tbody></table>";
+          return html;
+        }
+
+        function bindEvents() {
+          const groupSelect = widgetContainer.querySelector("#groupSize");
+          const timeSlot = widgetContainer.querySelector("#timeSlot");
+          const bookBtn = widgetContainer.querySelector("#bookBtn");
+
+          groupSelect.addEventListener("change", async () => {
+            await updateSlots();
+            checkEnableButton();
+          });
+          timeSlot.addEventListener("change", checkEnableButton);
+
+          bookBtn.addEventListener("click", async () => {
+            const variantId = selectedVariantId;
+            const time = timeSlot.value;
+
+            const draftRes = await fetch(`${BTA_API}/draft-bookings`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${BTA_API_KEY}`,
+              },
+              body: JSON.stringify({
+                variant_id: variantId,
+                start: time,
+              }),
+            });
+
+            const draftData = await draftRes.json();
+            const props = {
+              _booking_id: draftData.id,
+              _booking_start: draftData.start,
+              _booking_end: draftData.end,
+              _product_id: draftData.product_id,
+              _variant_id: draftData.variant_id,
+            };
+
+            const cartForm = document.createElement("form");
+            cartForm.method = "POST";
+            cartForm.action = "/cart/add";
+
+            const idInput = document.createElement("input");
+            idInput.type = "hidden";
+            idInput.name = "id";
+            idInput.value = variantId;
+            cartForm.appendChild(idInput);
+
+            for (let key in props) {
+              const input = document.createElement("input");
+              input.type = "hidden";
+              input.name = `properties[${key}]`;
+              input.value = props[key];
+              cartForm.appendChild(input);
+            }
+
+            document.body.appendChild(cartForm);
+            cartForm.submit();
+          });
+
+          widgetContainer.querySelectorAll(".calendar-cell").forEach((cell) => {
+            cell.addEventListener("click", async () => {
+              selectedDate = new Date(cell.getAttribute("data-date"));
+              await renderWidget();
+            });
+          });
+        }
+
+        function checkEnableButton() {
+          const groupSelect = widgetContainer.querySelector("#groupSize");
+          const timeSlot = widgetContainer.querySelector("#timeSlot");
+          const bookBtn = widgetContainer.querySelector("#bookBtn");
+          const ready = groupSelect.value && timeSlot.value;
+          bookBtn.disabled = !ready;
+          bookBtn.style.background = ready ? "#000" : "#cdd2d8";
+        }
+
+        await renderWidget();
+      });
+    </script>
+  </body>
+</html>
